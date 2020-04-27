@@ -1,4 +1,4 @@
-#!/usr/bin/python
+#!/usr/bin/env python
 # -*- coding: utf-8 -*-
 #
 # open source ggpo server (re)implementation
@@ -34,13 +34,20 @@
 # FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
 # OTHER DEALINGS IN THE SOFTWARE.
 #
+from __future__ import with_statement, print_function
 
 import sys
 import optparse
 import logging
-import ConfigParser
+try:
+	import configparser
+except ImportError:
+	import ConfigParser as configparser
 import os
-import SocketServer
+try:
+	import socketserver
+except ImportError:
+	import SocketServer as socketserver
 import socket
 import select
 import re
@@ -56,8 +63,14 @@ import traceback
 import threading
 import tarfile
 import boto
-from BaseHTTPServer import BaseHTTPRequestHandler,HTTPServer
-import urlparse
+try:
+	from http.server import BaseHTTPRequestHandler, HTTPServer
+except ImportError:
+	from BaseHTTPServer import BaseHTTPRequestHandler, HTTPServer
+try:
+	from urllib.parse import urlparse, parse_qs
+except ImportError:
+	from urlparse import urlparse, parse_qs
 try:
 	import requests
 except:
@@ -67,114 +80,120 @@ try:
 	import geoip2.database
 	reader = geoip2.database.Reader('GeoLite2-City.mmdb')
 except:
-	pass
+	reader = None
 
-VERSION=24
+VERSION = 24
 
-MIN_CLIENT_VERSION=42
+MIN_CLIENT_VERSION = 42
 
-DB_ENGINE="mysql"
+DB_ENGINE = "mysql"
 
-if DB_ENGINE=="sqlite3":
+if DB_ENGINE == "sqlite3":
 	import sqlite3
-	PARAM="?"
-elif DB_ENGINE=="mysql":
+	PARAM = "?"
+elif DB_ENGINE == "mysql":
 	import MySQLdb
-	PARAM="%s"
+	PARAM = "%s"
 
 class GGPOHttpHandler(BaseHTTPRequestHandler):
-
 	def print_dump(self):
-
 		path = self.path
 		if '?' in path:
 			path, tmp = path.split('?', 1)
-		o = urlparse.urlparse(self.path)
-		qs = urlparse.parse_qs(o.query)
-		out={}
+		o = urlparse(self.path)
+		qs = parse_qs(o.query)
+		out = {}
 
 		if path == "/channels":
 			for channel in ggposerver.channels.values():
-				out[channel.name]=[]
-				for client in channel.clients:
-					out[channel.name].append(client.nick)
+				out[channel.name] = [client.nick for client in channel.clients]
 
 		if path == "/clients":
 			timestamp = time.time()
 			for client in ggposerver.clients.values():
-				cli={}
-				cli["status"]=client.status
-				cli["channel"]=client.channel.name
-				cli["quark"]=client.quark
-				#cli["city"]=client.city
-				cli["idle"]=int(timestamp-client.lastmsgtime)
-				cli["country"]=client.country
-				cli["cc"]=client.cc
-				cli["version"]=client.version
-				out[client.nick]=cli
+				cli = {
+					'status': client.status,
+					'channel': client.channel.name,
+					'quark': client.quark,
+					# 'city': client.city,
+					'idle': int(timestamp - client.lastmsgtime),
+					'country': client.country,
+					'cc': client.cc,
+					'version': client.version,
+				}
+				out[client.nick] = cli
 
 		if path == "/games":
 			for quark in ggposerver.quarks.values():
-				if quark.p1!=None and quark.p2!=None and quark.p1.nick!=None and quark.p2.nick!=None and quark.channel!=None:
-					game={}
-					game["channel"]=quark.channel.name
-					game["p1"]=quark.p1.nick
-					game["p2"]=quark.p2.nick
-					game["spectators"]=len(quark.spectators)
-					game["useports"]=quark.useports
-					out[quark.quark]=game
+				if (quark.p1 is not None and
+					quark.p2 is not None and
+					quark.p1.nick is not None and
+					quark.p2.nick is not None and
+					quark.channel is not None):
+					game = {
+						'channel': quark.channel.name,
+						'p1': quark.p1.nick,
+						'p2': quark.p2.nick,
+						'spectators': len(quark.spectators),
+						'useports': quark.useports,
+					}
+					out[quark.quark] = game
 
 		if path == "/stats":
-			out["version"]='{0:.2f}'.format(VERSION/100.0)
+			out["version"] = '{0:.2f}'.format(VERSION / 100.0)
 			clients = len(ggposerver.clients)
-			out["clients"]=clients
-			quarks=0
+			out["clients"] = clients
+			quarks = 0
 			for quark in ggposerver.quarks.values():
-				if quark.p1!=None and quark.p2!=None and quark.p1.nick!=None and quark.p2.nick!=None:
-					quarks=quarks+1
-			out["games"]=quarks
-			spectators=0
+				if (quark.p1 is not None and
+					quark.p2 is not None and
+					quark.p1.nick is not None and
+					quark.p2.nick is not None):
+					quarks += 1
+			out["games"] = quarks
+			spectators = 0
 			connections = dict(ggposerver.connections)
-			for host in connections:
+			for host, client in connections.items():
 				try:
-					client = ggposerver.connections[host]
-					if client.clienttype=="spectator":
-						spectators+=1
+					if client.clienttype == "spectator":
+						spectators += 1
 				except:
 					pass
-			out["spectators"]=spectators
-			out["connections"]=len(ggposerver.connections)+len(ggposerver.clients)
+			out["spectators"] = spectators
+			out["connections"] = len(ggposerver.connections) + len(ggposerver.clients)
 
 		if path == "/mute":
 			try:
 				nick=str(qs['nick'][0])
 				timestamp = time.time()
 				for client in ggposerver.clients.values():
-					if client.nick==nick:
-						cli={}
-						cli["status"]=client.status
-						cli["channel"]=client.channel.name
-						cli["cc"]=client.cc
-						cli["idle"]=int(timestamp-client.lastmsgtime)
-						cli["version"]=client.version
-						out[client.nick]=cli
-						client.spamhit+=10
+					if client.nick == nick:
+						cli = {
+							'status': client.status,
+							'channel': client.channel.name,
+							'cc': client.cc,
+							'idle': int(timestamp - client.lastmsgtime),
+							'version': client.version,
+						}
+						out[client.nick] = cli
+						client.spamhit += 10
 			except:
 				pass
 
 		if path == "/kill":
 			try:
-				nick=str(qs['nick'][0])
+				nick = str(qs['nick'][0])
 				timestamp = time.time()
 				for client in ggposerver.clients.values():
-					if client.nick==nick:
-						cli={}
-						cli["status"]=client.status
-						cli["channel"]=client.channel.name
-						cli["cc"]=client.cc
-						cli["idle"]=int(timestamp-client.lastmsgtime)
-						cli["version"]=client.version
-						out[client.nick]=cli
+					if client.nick == nick:
+						cli = {
+							'status': client.status,
+							'channel': client.channel.name,
+							'cc': client.cc,
+							'idle': int(timestamp - client.lastmsgtime),
+							'version': client.version,
+						}
+						out[client.nick] = cli
 						client.handle_part(client.channel.name)
 						client.request.close()
 						ggposerver.clients.pop(client.nick)
@@ -183,58 +202,60 @@ class GGPOHttpHandler(BaseHTTPRequestHandler):
 
 		if path == "/clean":
 			try:
-				limit=int(qs['limit'][0])
+				limit = int(qs['limit'][0])
 			except:
-				limit=1000
+				limit = 1000
 			try:
-				idle=int(qs['idle'][0])
+				idle = int(qs['idle'][0])
 			except:
-				idle=0
+				idle = 0
 			try:
-				status=int(qs['status'][0])
+				status = int(qs['status'][0])
 			except:
-				status=1
+				status = 1
 			try:
-				clienttype=str(qs['clienttype'][0])
+				clienttype = str(qs['clienttype'][0])
 			except:
-				clienttype="client"
-			num=0
+				clienttype = "client"
+			num = 0
 			timestamp = time.time()
-			if clienttype=="client":
+			if clienttype == "client":
 				for client in ggposerver.clients.values():
 					if num >= limit:
 						break
-					if client.status==status and timestamp-client.lastmsgtime > idle and client.nick!='pof':
-						cli={}
-						cli["status"]=client.status
-						cli["channel"]=client.channel.name
-						cli["cc"]=client.cc
-						cli["idle"]=int(timestamp-client.lastmsgtime)
-						cli["version"]=client.version
-						out[client.nick]=cli
+					if (client.status == status and
+						timestamp - client.lastmsgtime > idle and
+						client.nick != 'pof'):
+						cli = {
+							'status': client.status,
+							'channel': client.channel.name,
+							'cc': client.cc,
+							'idle': int(timestamp - client.lastmsgtime),
+							'version': client.version,
+						}
+						out[client.nick] = cli
 						client.handle_part(client.channel.name)
 						client.request.close()
 						ggposerver.clients.pop(client.nick)
-						num+=1
-			if clienttype=="spectator":
-				for host in dict(ggposerver.connections):
+						num += 1
+			if clienttype == "spectator":
+				connections = dict(ggposerver.connections)
+				for host, client in connections.items():
 					if num >= limit:
 						break
 					try:
-						client = ggposerver.connections[host]
-						if client.clienttype=="spectator":
-							cli={}
-							cli["quark"]=client.quark
-							out[str(host)]=cli
+						if client.clienttype == "spectator":
+							cli = { 'quark': client.quark }
+							out[str(host)] = cli
 							client.request.close()
-							num+=1
+							num += 1
 					except KeyError:
 						pass
 
 		res = json.dumps(out, indent=4, sort_keys=True);
 		self.wfile.write(res)
 
-	#Handler for the GET requests
+	# Handler for the GET requests
 	def do_GET(self):
 		self.send_response(200)
 		self.send_header('Content-type','text/html')
@@ -259,12 +280,12 @@ class GGPOChannel(object):
 	Object representing an GGPO channel.
 	"""
 	def __init__(self, name, rom, topic, motd='', chunksize=1096, port=7000):
-		self.name = name
-		self.rom = rom
-		self.topic = topic
-		self.motd = motd
-		self.chunksize = chunksize
-		self.port = port
+		self.name = name # type: str
+		self.rom = rom # type: str
+		self.topic = topic # type: str
+		self.motd = motd # type: str
+		self.chunksize = chunksize # type: int
+		self.port = port # type: int
 		self.clients = set()
 
 class GGPOQuark(object):
@@ -278,10 +299,10 @@ class GGPOQuark(object):
 		self.p2 = None
 		self.p2client = None
 		self.spectators = set()
-		self.recorded = False
-		self.useports = False
+		self.recorded = False # type: bool
+		self.useports = False # type: bool
 		self.channel = None
-		self.proxyport = {}
+		self.proxyport = {} # type: dict
 
 # http://stackoverflow.com/q/12248132
 def set_keepalive_linux(sock, after_idle_sec=3600, interval_sec=3, max_fails=5):
@@ -297,14 +318,14 @@ def set_keepalive_linux(sock, after_idle_sec=3600, interval_sec=3, max_fails=5):
 	sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPCNT, max_fails)
 
 def dbconnect():
-	if DB_ENGINE=="sqlite3":
-		createdb=False
+	if DB_ENGINE == "sqlite3":
+		createdb = False
 		dbfile = os.path.join(os.path.realpath(os.path.dirname(sys.argv[0])),'db', 'ggposrv.sqlite3')
 		if not os.path.exists(dbfile):
-			createdb=True
+			createdb = True
 			os.mkdir(os.path.dirname(dbfile))
 		conn = sqlite3.connect(dbfile)
-		if createdb==True:
+		if createdb is True:
 			cursor = conn.cursor()
 			cursor.execute("""CREATE TABLE IF NOT EXISTS users (
 						id INTEGER PRIMARY KEY,
@@ -332,11 +353,11 @@ def dbconnect():
 			logging.info("created empty quark database")
 			conn.commit()
 		return conn
-	elif DB_ENGINE=="mysql":
+	elif DB_ENGINE == "mysql":
 		conn = MySQLdb.connect(host="localhost", user="ggpo", passwd="ggpo", db="ggposrv")
 		return conn
 
-class GGPOClient(SocketServer.BaseRequestHandler):
+class GGPOClient(socketserver.BaseRequestHandler):
 	"""
 	GGPO client connect and command handling. Client connection is handled by
 	the `handle` method which sets up a two-way communication with the client.
@@ -373,37 +394,35 @@ class GGPOClient(SocketServer.BaseRequestHandler):
 			set_keepalive_linux(request)
 		except:
 			pass
-		SocketServer.BaseRequestHandler.__init__(self, request, client_address, server)
+		socketserver.BaseRequestHandler.__init__(self, request, client_address, server)
 
-	def pad2hex(self,l):
-		return "".join(reversed(struct.pack('I',l)))
+	def pad2hex(self, l):
+		return "".join(reversed(struct.pack('I', l)))
 
-	def sizepad(self,value):
-		if value==None:
-			return('')
-		l=len(value)
+	def sizepad(self, value):
+		if value is None:
+			return ''
+		l = len(value)
 		pdu = self.pad2hex(l)
 		pdu += value
 		return pdu
 
-	def reply(self,sequence,pdu):
-
-		length=4+len(pdu)
+	def reply(self, sequence, pdu):
+		length = 4 + len(pdu)
 		return self.pad2hex(length) + self.pad2hex(sequence) + pdu
 
 	def send_ack(self, sequence):
-		ACK='\x00\x00\x00\x00'
+		ACK = '\x00\x00\x00\x00'
 		response = self.reply(sequence,ACK)
 		logging.debug('ACK to %s: %r' % (self.client_ident(), response))
 		self.send_queue.append(response)
 
-	def get_client_from_nick(self,nick):
-		try:
-			clients = dict(self.server.clients)
-			for client_nick in clients:
-				if client_nick == nick:
-					return self.server.clients[nick]
+	def get_client_from_nick(self, nick):
+		client = dict(self.server.clients).get(client_nick)
+		if client is not None:
+			return client
 
+		try:
 			for client_nick in self.channel.clients:
 				if client_nick == nick:
 					return self.channel.clients[nick]
@@ -414,49 +433,43 @@ class GGPOClient(SocketServer.BaseRequestHandler):
 		logging.info('[%s] WARNING: Could not find client: %s (returning self)' % (self.client_ident(), nick))
 		return self
 
-	def check_quark_format(self,quark):
+	def check_quark_format(self, quark):
 		a = re.compile("^challenge\-[0-9]{4}\-[0-9]{10,11}[.][0-9]{2}$")
-		if a.match(quark):
-			return True
-		else:
-			return False
+		return (a.match(quark) is not None)
 
 	def geolocate(self, ip):
-		iso_code=''
-		country=''
-		city=''
+		iso_code = ''
+		country = ''
+		city = ''
 		try:
 			response = reader.city(ip)
 
-			if response.country.iso_code!=None:
-				iso_code=str(response.country.iso_code)
-			if response.country.name!=None:
-				country=str(response.country.name)
-			#if response.city.name!=None:
-				#city=str(response.city.name)
+			if response.country.iso_code is not None:
+				iso_code = str(response.country.iso_code)
+			if response.country.name is not None:
+				country = str(response.country.name)
+			# if response.city.name is not None:
+			# 	city = str(response.city.name)
 
-			if (response.subdivisions.most_specific.name=="Barcelona" or
-			    response.subdivisions.most_specific.name=="Tarragona" or
-			    response.subdivisions.most_specific.name=="Lleida" or
-			    response.subdivisions.most_specific.name=="Girona"):
-				iso_code="Catalonia"
-				country="Catalonia"
+			catalonia_set = {"Barcelona", "Tarragona", "Lleida", "Girona"}
+			if response.subdivisions.most_specific.name in catalonia_set:
+				iso_code = "Catalonia"
+				country = "Catalonia"
 		except:
 			pass
 
-		return iso_code,country,city
+		return iso_code, country, city
 
 	def parse(self, data):
-
 		response = ''
 		logging.debug('[PARSE] from %s: %r' % (self.client_ident(), data))
 
-		length=int(data[0:4].encode('hex'),16)
-		if (len(data)<length-4): return()
-		sequence=0
+		length = int(data[0:4].encode('hex'), 16)
+		if len(data) < length - 4: return
+		sequence = 0
 
-		if (length >= 4):
-			sequence=int(data[4:8].encode('hex'),16)
+		if length >= 4:
+			sequence = int(data[4:8].encode('hex'), 16)
 
 		if (length >= 8):
 			command=int(data[8:12].encode('hex'),16)
@@ -470,49 +483,49 @@ class GGPOClient(SocketServer.BaseRequestHandler):
 				passwordlen=int(data[16+nicklen:16+nicklen+4].encode('hex'),16)
 				password=data[20+nicklen:20+nicklen+passwordlen]
 				port=int(data[20+nicklen+passwordlen:24+nicklen+passwordlen].encode('hex'),16)
-				if len(data) > 24+nicklen+passwordlen:
-					version=int(data[24+nicklen+passwordlen:28+nicklen+passwordlen].encode('hex'),16)
+				if len(data) > 24 + nicklen + passwordlen:
+					version = int(data[24+nicklen+passwordlen:28+nicklen+passwordlen].encode('hex'),16)
 				else:
-					version=0
-				params=nick,password,port,version,sequence
+					version = 0
+				params = nick,password,port,version,sequence
 
 			if (command==2):
-				if self.nick==None: return()
+				if self.nick is None: return
 				command = "motd"
 				params = sequence
 
 			if (command==3):
-				if self.nick==None: return()
-				command="list"
+				if self.nick is None: return
+				command = "list"
 				params = sequence
 
 			if (command==4):
-				if self.nick==None: return()
+				if self.nick is None: return
 				command="users"
 				params = sequence
 
 			if (command==5):
-				if self.nick==None: return()
+				if self.nick is None: return
 				command="join"
 				channellen=int(data[12:16].encode('hex'),16)
 				channel=data[16:16+channellen]
 				params = channel,sequence
 
 			if (command==6):
-				if self.nick==None: return()
+				if self.nick is None: return
 				command="status"
 				status=int(data[12:16].encode('hex'),16)
 				params = status,sequence
 
 			if (command==7):
-				if self.nick==None: return()
+				if self.nick is None: return
 				command="privmsg"
 				msglen=int(data[12:16].encode('hex'),16)
 				msg=data[16:16+msglen]
 				params = msg,sequence
 
 			if (command==8):
-				if self.nick==None: return()
+				if self.nick is None: return
 				command="challenge"
 				nicklen=int(data[12:16].encode('hex'),16)
 				nick=data[16:16+nicklen]
@@ -521,7 +534,7 @@ class GGPOClient(SocketServer.BaseRequestHandler):
 				params = nick,channel,sequence
 
 			if (command==9):
-				if self.nick==None: return()
+				if self.nick is None: return
 				command="accept"
 				nicklen=int(data[12:16].encode('hex'),16)
 				nick=data[16:16+nicklen]
@@ -558,7 +571,7 @@ class GGPOClient(SocketServer.BaseRequestHandler):
 				params = quark,msg,sequence
 
 			if (command==0x10):
-				if self.nick==None: return()
+				if self.nick is None: return
 				command="watch"
 				nicklen=int(data[12:16].encode('hex'),16)
 				nick=data[16:16+nicklen]
@@ -598,7 +611,7 @@ class GGPOClient(SocketServer.BaseRequestHandler):
 				params = quark,sequence
 
 			if (command==0x1c):
-				if self.nick==None: return()
+				if self.nick is None: return
 				command="cancel"
 				nicklen=int(data[12:16].encode('hex'),16)
 				nick=data[16:16+nicklen]
@@ -615,25 +628,25 @@ class GGPOClient(SocketServer.BaseRequestHandler):
 				handler = getattr(self, 'handle_%s' % (command), None)
 				if not handler:
 					logging.info('[%s] No handler for command: %s. Full line: %r' % (self.client_ident(), command, data))
-					if self.nick==None: return()
+					if self.nick is None: return
 					command="unknown"
 					params = sequence
 					handler = getattr(self, 'handle_%s' % (command), None)
 
 				response = handler(params)
-			except AttributeError, e:
+			except AttributeError as e:
 				raise e
 				logging.error('[%s] ERROR (1) %s in command %s' % (self.client_ident(), e, command))
-			except GGPOError, e:
+			except GGPOError as e:
 				response = '[%s] ERROR (2) %s %s in command %s' % (self.client_ident(), e.code, e.value, command)
 				logging.error('%s' % (response))
-			except Exception, e:
+			except Exception as e:
 				response = '[%s] ERROR (3) %s in command %s' % (self.client_ident(), repr(e), command)
 				logging.error('%s' % (response))
 				raise
 
-		if (len(data) > length+4 ):
-			pdu=data[length+4:]
+		if len(data) > length + 4:
+			pdu = data[length+4:]
 			self.parse(pdu)
 
 		return response
@@ -641,11 +654,11 @@ class GGPOClient(SocketServer.BaseRequestHandler):
 	def handle(self):
 		logging.info('[%s] Client connected' % (self.client_ident(), ))
 
-		data=''
+		data = ''
 		while True:
 			try:
 				ready_to_read, ready_to_write, in_error = select.select([self.request], [], [], 0.1)
-			except Exception, e:
+			except Exception as e:
 				logging.debug('[%s] ERROR: %s' % (self.client_ident(), e))
 				break
 
@@ -662,19 +675,19 @@ class GGPOClient(SocketServer.BaseRequestHandler):
 			# See if the client has any commands for us.
 			if len(ready_to_read) == 1 and ready_to_read[0] == self.request:
 				try:
-					dataread=self.request.recv(16384)
-					data+=dataread
+					dataread = self.request.recv(16384)
+					data += dataread
 
 					if not dataread:
 						break
 					#logging.debug('[RECV] from %s: %r' % (self.client_ident(), data))
 
-					while (len(data)-4 > int(data[0:4].encode('hex'),16)):
-						length=int(data[0:4].encode('hex'),16)
+					while (len(data)-4 > int(data[0:4].encode('hex'), 16)):
+						length=int(data[0:4].encode('hex'), 16)
 						response = self.parse(data[0:length+4])
 						data=data[length+4:]
 
-					if len(data)-4 == int(data[0:4].encode('hex'),16):
+					if len(data)-4 == int(data[0:4].encode('hex'), 16):
 						response = self.parse(data)
 						data=''
 
@@ -682,7 +695,7 @@ class GGPOClient(SocketServer.BaseRequestHandler):
 							logging.debug('<<<<<<>>>>>to %s: %r' % (self.client_ident(), response))
 							#self.request.send(response)
 
-				except Exception, e:
+				except Exception as e:
 					logging.info('[%s] Can\'t read data. Finishing. ERROR: %s' % (self.client_ident(), repr(e)))
 					self.finish()
 
@@ -693,10 +706,9 @@ class GGPOClient(SocketServer.BaseRequestHandler):
 		Returns a GGPOClient object representing our FBA peer's ggpofba connection, or self if not found
 		"""
 		connections = dict(self.server.connections)
-		for host in connections:
+		for host, client in connections.items():
 			try:
-				client = self.server.connections[host]
-				if client.clienttype=="player" and client.quark==quark and client.host!=self.host:
+				if client.clienttype == "player" and client.quark == quark and client.host != self.host:
 					return client
 			except KeyError:
 				pass
@@ -707,22 +719,23 @@ class GGPOClient(SocketServer.BaseRequestHandler):
 		Returns a GGPOClient object representing our own client connection, or self if not found
 		"""
 		try:
-			quarkobject = self.server.quarks[quark]
+			if self.nick is not None:
+				quarkobject = self.server.quarks[quark]
 
-			if quarkobject.p1client!=None and self.nick!=None:
-				if quarkobject.p1client.nick == self.nick:
-					return quarkobject.p1client
+				if quarkobject.p1client is not None:
+					if quarkobject.p1client.nick == self.nick:
+						return quarkobject.p1client
 
-			if quarkobject.p2client!=None and self.nick!=None:
-				if quarkobject.p2client.nick == self.nick:
-					return quarkobject.p2client
+				if quarkobject.p2client is not None:
+					if quarkobject.p2client.nick == self.nick:
+						return quarkobject.p2client
 		except KeyError:
 			pass
 
 		clients = dict(self.server.clients)
 		for nick in clients:
 			client = self.get_client_from_nick(nick)
-			if client.clienttype=="client" and client.quark==quark and client.host[0]==self.host[0]:
+			if client.clienttype == "client" and client.quark == quark and client.host[0] == self.host[0]:
 				return client
 		return self
 
@@ -746,13 +759,13 @@ class GGPOClient(SocketServer.BaseRequestHandler):
 		# send the ACK to the client
 		#self.send_ack(sequence)
 
-		peer=self.get_peer_from_quark(quark)
+		peer = self.get_peer_from_quark(quark)
 
 		# send the in-game chat messages to the client
 		# this helps people using experimental blitter that can't see the OSD text
 		try:
 			quarkobject = self.server.quarks[quark]
-			if quarkobject.p1.nick==self.nick:
+			if quarkobject.p1.nick == self.nick:
 				mypeer = quarkobject.p2client
 				myself = quarkobject.p1client
 			else:
@@ -787,13 +800,12 @@ class GGPOClient(SocketServer.BaseRequestHandler):
 		response = self.reply(negseq,pdu)
 
 		connections = dict(self.server.connections)
-		for host in connections:
+		for host, client in connections.items():
 			try:
-				client = self.server.connections[host]
-				if client.clienttype=="spectator" and client.quark==quark and client.side==0:
+				if client.clienttype == "spectator" and client.quark == quark and client.side == 0:
 					logging.debug('to %s: %r' % (client.client_ident(), response))
 					client.send_queue.append(response)
-					client.side=3
+					client.side = 3
 			except KeyError:
 				pass
 
@@ -801,13 +813,13 @@ class GGPOClient(SocketServer.BaseRequestHandler):
 		try:
 			quarkobject = self.server.quarks[quark]
 		except KeyError:
-			return()
+			return
 
-		if quarkobject.p1.nick==None and quarkobject.p2.nick==None and quarkobject.channel.name=='lobby':
+		if quarkobject.p1.nick is None and quarkobject.p2.nick is None and quarkobject.channel.name == 'lobby':
 			self.finish()
-			return()
+			return
 
-		if self.check_quark_format(quark) and quarkobject.recorded == False:
+		if self.check_quark_format(quark) and quarkobject.recorded is False:
 			quarkobject.recorded=True
 
 			# match started successfully, reset useports on both clients:
@@ -838,9 +850,8 @@ class GGPOClient(SocketServer.BaseRequestHandler):
 					os.mkdir(os.path.dirname(quarkfile))
 				except:
 					pass
-				f=open(quarkfile, 'wb')
-				f.write(response)
-				f.close()
+				with open(quarkfile, 'wb') as f:
+					f.write(response)
 
 	def handle_savestate(self, params):
 		quark, block1, block2, gamebuf, sequence = params
@@ -853,10 +864,9 @@ class GGPOClient(SocketServer.BaseRequestHandler):
 		response = self.reply(negseq,pdu)
 
 		connections = dict(self.server.connections)
-		for host in connections:
+		for host, client in connections.items():
 			try:
-				client = self.server.connections[host]
-				if client.clienttype=="spectator" and client.quark==quark and client.side==3:
+				if client.clienttype == "spectator" and client.quark == quark and client.side == 3:
 					logging.debug('to %s: %r' % (client.client_ident(), response))
 					client.send_queue.append(response)
 			except KeyError:
@@ -876,9 +886,8 @@ class GGPOClient(SocketServer.BaseRequestHandler):
 				except:
 					pass
 			try:
-				f=open(quarkfile, 'ab')
-				f.write(response)
-				f.close()
+				with open(quarkfile, 'ab') as f:
+					f.write(response)
 			except IOError:
 				logging.debug('[%s] IOError in command savestate' % (self.client_ident()))
 
@@ -896,7 +905,7 @@ class GGPOClient(SocketServer.BaseRequestHandler):
 
 			dbfile = os.path.join(os.path.realpath(os.path.dirname(sys.argv[0])),'db', 'ggposrv.sqlite3')
 			if not os.path.exists(dbfile):
-				return()
+				return
 
 			conn = dbconnect()
 			cursor = conn.cursor()
@@ -912,7 +921,7 @@ class GGPOClient(SocketServer.BaseRequestHandler):
 				channel="ssf2xj"
 
 			if player1=='' and player2=='':
-				return()
+				return
 
 			# if the quark file is not present in the local cache, retrieve it from S3
 			quarkfile = os.path.join(os.path.realpath(os.path.dirname(sys.argv[0])),'quarks', 'quark-'+quark+'-gamebuffer.fs')
@@ -978,13 +987,13 @@ class GGPOClient(SocketServer.BaseRequestHandler):
 				response = f.read(CHUNKSIZE)
 			f.close()
 			self.finish()
-			return()
+			return
 
-		i=0
+		i = 0
 		while True:
-			if (quarkobject.p1 != None and quarkobject.p2 != None) or i>=30:
+			if (quarkobject.p1 is not None and quarkobject.p2 is not None) or i >= 30:
 				break
-			i=i+1
+			i += 1
 			time.sleep(1)
 
 		pdu='\x00\x00\x00\x00'
@@ -1023,7 +1032,7 @@ class GGPOClient(SocketServer.BaseRequestHandler):
 
 		if replayonly:
 			self.finish()
-			return()
+			return
 
 		# send ack to the client's ggpofba
 		self.send_ack(sequence)
@@ -1041,14 +1050,14 @@ class GGPOClient(SocketServer.BaseRequestHandler):
 			self.channel=myself.channel
 			quarkobject.channel=myself.channel
 
-		if quarkobject.p1!=None and quarkobject.p2!=None:
+		if quarkobject.p1 is not None and quarkobject.p2 is not None:
 			logging.info('[%s] getpeer in a full quark: go away' % (self.client_ident()))
 			self.finish()
 			return
 
-		i=0
+		i = 0
 		while True:
-			i=i+1
+			i += 1
 			time.sleep(0.8)
 			peer=self.get_peer_from_quark(quark)
 			if peer!=self or i>=30:
@@ -1057,7 +1066,7 @@ class GGPOClient(SocketServer.BaseRequestHandler):
 		if peer==self:
 			logging.info('[%s] couldn\'t find peer: %s' % (self.client_ident() , peer.client_ident()))
 			self.finish()
-			return()
+			return
 		else:
 			logging.debug('[%s] found peer: %s [my fbaport: %d ; peer fbaport: %d]' % (self.client_ident() , peer.client_ident(), self.fbaport, peer.fbaport))
 
@@ -1076,27 +1085,27 @@ class GGPOClient(SocketServer.BaseRequestHandler):
 				self.finish()
 				return()
 
-		selfchallenge=False
-		if self.side==1 and quarkobject.p1==None:
-			quarkobject.p1=self
-			quarkobject.p1client=myself
-		elif self.side==2 and quarkobject.p2==None:
-			quarkobject.p2=self
-			quarkobject.p2client=myself
+		selfchallenge = False
+		if self.side == 1 and quarkobject.p1 is None:
+			quarkobject.p1 = self
+			quarkobject.p1client = myself
+		elif self.side == 2 and quarkobject.p2 is None:
+			quarkobject.p2 = self
+			quarkobject.p2client = myself
 		else:
 			# you are challenging yourself
-			if (quarkobject.p1==None):
-				quarkobject.p1=self
-				quarkobject.p1client=myself
-			if (quarkobject.p2==None):
-				quarkobject.p2=self
-				quarkobject.p2client=myself
-			selfchallenge=True
+			if quarkobject.p1 is None:
+				quarkobject.p1 = self
+				quarkobject.p1client = myself
+			if quarkobject.p2 is None:
+				quarkobject.p2 = self
+				quarkobject.p2client = myself
+			selfchallenge = True
 
-		negseq=4294967289 #'\xff\xff\xff\xf9'
-		if holepunch and self.useports==False and peer.useports==False and quarkobject.useports==False:
+		negseq = 4294967289 #'\xff\xff\xff\xf9'
+		if holepunch and self.useports is False and peer.useports is False and quarkobject.useports is False:
 			# when UDP hole punching is enabled clients must use the udp proxy wrapper
-			pdu=self.sizepad("127.0.0.1")
+			pdu = self.sizepad("127.0.0.1")
 			if selfchallenge:
 				pdu+=self.pad2hex(7002)
 			else:
@@ -1151,9 +1160,9 @@ class GGPOClient(SocketServer.BaseRequestHandler):
 			pdu=self.sizepad(peer.host[0])
 			pdu+=self.pad2hex(peer.fbaport)
 		if self.side==1:
-			pdu+=self.pad2hex(1)
+			pdu += self.pad2hex(1)
 		else:
-			pdu+=self.pad2hex(0)
+			pdu += self.pad2hex(0)
 
 		response = self.reply(negseq,pdu)
 		logging.debug('to %s: %r' % (self.client_ident(), response))
@@ -1185,9 +1194,8 @@ class GGPOClient(SocketServer.BaseRequestHandler):
 
 		# a match can only be spectated once from the same ip
 		connections = dict(self.server.connections)
-		for host in connections:
+		for host, client in connections.items():
 			try:
-				client = self.server.connections[host]
 				if client.clienttype=="spectator" and client.host[0]==self.host[0] and client.quark==quark:
 					logging.debug('[%s] kicking spectator trying to watch a duplicate quark: %s' % (self.client_ident(), quark))
 					self.finish()
@@ -1288,25 +1296,23 @@ class GGPOClient(SocketServer.BaseRequestHandler):
 
 		client = self.get_client_from_nick(nick)
 
-		challengespam=False
 		timestamp = time.time()
-		if (timestamp-self.lastmsgtime < 0.70):
-			challengespam=True
+		challengespam = (timestamp - self.lastmsgtime < 0.70)
 
 		# clean self.quark if it's already set and the last challenge was more than 1 min ago
-		if (timestamp-self.challengetime > 60 and self.quark!=None and self.status!=2):
-			self.quark=None
+		if (timestamp-self.challengetime > 60 and self.quark is not None and self.status!=2):
+			self.quark = None
 
 		self.lastmsgtime = timestamp
 
 		# if we can't find the client, tell the user that this client has parted:
-		if client == self and nick!=self.nick:
-			negseq=4294967293 #'\xff\xff\xff\xfd'
-			pdu=''
-			pdu+='\x00\x00\x00\x01' #unk1
-			pdu+='\x00\x00\x00\x00' #unk2
-			pdu+=self.sizepad(nick)
-			response = self.reply(negseq,pdu)
+		if client == self and nick != self.nick:
+			negseq = 4294967293 #'\xff\xff\xff\xfd'
+			pdu = ''
+			pdu += '\x00\x00\x00\x01' #unk1
+			pdu += '\x00\x00\x00\x00' #unk2
+			pdu += self.sizepad(nick)
+			response = self.reply(negseq, pdu)
 			self.send_queue.append(response)
 
 		# check that user is connected, in available state and in the same channel, and we're not playing
@@ -1661,7 +1667,7 @@ class GGPOClient(SocketServer.BaseRequestHandler):
 			pdu+=self.sizepad(self.cc)
 			pdu+=self.sizepad(self.country)
 			pdu+=self.pad2hex(self.port)
-			if (self.opponent!=None):
+			if self.opponent is not None:
 				client = self.get_client_from_nick(self.opponent)
 				pdu2+='\x00\x00\x00\x01'
 				pdu2+=self.sizepad(client.nick)
@@ -1839,9 +1845,8 @@ class GGPOClient(SocketServer.BaseRequestHandler):
 			except:
 				pass
 		try:
-			f=open(chanfile, 'w')
-			f.write(str(len(channel.clients)))
-			f.close()
+			with open(chanfile, 'w') as f
+				f.write(str(len(channel.clients)))
 		except:
 			pass
 
@@ -1871,7 +1876,7 @@ class GGPOClient(SocketServer.BaseRequestHandler):
 		response = self.reply(negseq,self.sizepad(self.nick)+self.sizepad(msg))
 		if (self.nick=="System"):
 			for client in self.server.clients.values():
-				if client.clienttype=="client":
+				if client.clienttype == "client":
 					logging.debug('to %s: %r' % (client.client_ident(), response))
 					client.send_queue.append(response)
 			return
@@ -1954,9 +1959,8 @@ class GGPOClient(SocketServer.BaseRequestHandler):
 			except:
 				pass
 		try:
-			f=open(chanfile, 'w')
-			f.write(str(len(channel.clients)))
-			f.close()
+			with open(chanfile, 'w') as f:
+				f.write(str(len(channel.clients)))
 		except:
 			pass
 
@@ -1974,19 +1978,17 @@ class GGPOClient(SocketServer.BaseRequestHandler):
 		# generic motd
 		motdfile = os.path.join(os.path.realpath(os.path.dirname(sys.argv[0])),'motd', 'motd.txt')
 		if os.path.exists(motdfile):
-			f=open(motdfile, 'r')
-			for line in f.readlines():
-				motd+=line
-			f.close()
+			with open(motdfile, 'r') as f:
+				for line in f.readlines():
+					motd += line
 			motd+='\n'
 
 		# channel specific motd
 		motdfile = os.path.join(os.path.realpath(os.path.dirname(sys.argv[0])),'motd', channel+'.txt')
 		if os.path.exists(motdfile):
-			f=open(motdfile, 'r')
-			for line in f.readlines():
-				motd+=line
-			f.close()
+			with open(motdfile, 'r') as f:
+				for line in f.readlines():
+					motd += line
 			motd+='\n'
 
 		# dynamic motd
@@ -2010,9 +2012,8 @@ class GGPOClient(SocketServer.BaseRequestHandler):
 			except:
 				pass
 		try:
-			f=open(chanfile, 'w')
-			f.write(str(clients))
-			f.close()
+			with open(chanfile, 'w') as f:
+				f.write(str(clients))
 		except:
 			pass
 
@@ -2033,17 +2034,19 @@ class GGPOClient(SocketServer.BaseRequestHandler):
 			motd+='-!- There are '+str(clients)+' clients connected to the server.\n'
 
 		#quarks = len(self.server.quarks)
-		quarks=0
+		quarks = 0
 		for quark in self.server.quarks.values():
-			if quark.p1!=None and quark.p2!=None and quark.p1.nick!=None and quark.p2.nick!=None:
-				quarks=quarks+1
+			if (quark.p1 is not None and
+				quark.p2 is not None and
+				quark.p1.nick is not None and
+				quark.p2.nick is not None):
+				quarks += 1
 
 		# write the number of quarks to /run/shm/ggposrv/server-quarks.${port-number}.txt
 		quarksfile = "/run/shm/ggposrv/server-quarks."+str(listen_port)+".txt"
 		try:
-			f=open(quarksfile, 'w')
-			f.write(str(quarks))
-			f.close()
+			with open(quarksfile, 'w') as f:
+				f.write(str(quarks))
 		except:
 			pass
 
@@ -2051,36 +2054,33 @@ class GGPOClient(SocketServer.BaseRequestHandler):
 			if int(listen_port) != int(port):
 				# pick the value from /run/shm/ggposrv/server-quarks.${port-number}.txt
 				try:
-					f=open("/run/shm/ggposrv/server-quarks."+str(port)+".txt", 'r')
-					num_quarks = int(f.read())
-					f.close()
+					with open("/run/shm/ggposrv/server-quarks."+str(port)+".txt", 'r') as f:
+						num_quarks = int(f.read())
 				except:
-					num_quarks=0
-				quarks+=num_quarks
+					num_quarks = 0
+				quarks += num_quarks
 
-		if quarks==0:
-			motd+='-!- At the moment no one is playing :(\n'
-		elif quarks==1:
-			motd+='-!- There is only one ongoing game.\n'
+		if quarks == 0:
+			motd += '-!- At the moment no one is playing :(\n'
+		elif quarks == 1:
+			motd += '-!- There is only one ongoing game.\n'
 		elif quarks>1:
-			motd+='-!- There are '+str(quarks)+' ongoing games.\n'
+			motd += '-!- There are '+str(quarks)+' ongoing games.\n'
 
-		spectators=0
+		spectators = 0
 		connections = dict(self.server.connections)
-		for host in connections:
+		for host, client in connections.items():
 			try:
-				client = self.server.connections[host]
-				if client.clienttype=="spectator":
-					spectators+=1
+				if client.clienttype == "spectator":
+					spectators += 1
 			except:
 				pass
 
 		# write the number of spectators to /run/shm/ggposrv/server-quarks.${port-number}.txt
 		specfile = "/run/shm/ggposrv/server-spectators."+str(listen_port)+".txt"
 		try:
-			f=open(specfile, 'w')
-			f.write(str(spectators))
-			f.close()
+			with open(specfile, 'w') as f:
+				f.write(str(spectators))
 		except:
 			pass
 
@@ -2088,12 +2088,11 @@ class GGPOClient(SocketServer.BaseRequestHandler):
 			if int(listen_port) != int(port):
 				# pick the value from /run/shm/ggposrv/server-spectators.${port-number}.txt
 				try:
-					f=open("/run/shm/ggposrv/server-spectators."+str(port)+".txt", 'r')
-					num_spectators = int(f.read())
-					f.close()
+					with open("/run/shm/ggposrv/server-spectators."+str(port)+".txt", 'r') as f:
+						num_spectators = int(f.read())
 				except:
-					num_spectators=0
-				spectators+=num_spectators
+					num_spectators = 0
+				spectators += num_spectators
 
 		motd+='-!- There are '+str(spectators)+' spectators.\n'
 
@@ -2108,15 +2107,15 @@ class GGPOClient(SocketServer.BaseRequestHandler):
 		"""
 		Dump internal server information for debugging purposes.
 		"""
-		print "Clients:"
+		print("Clients:")
 		for client in self.server.clients.values():
-			print " ", client
-			print "     ", client.channel.name
-		print "Channels:"
+			print(" ", client)
+			print("     ", client.channel.name)
+		print("Channels:")
 		for channel in self.server.channels.values():
-			print " ", channel.name, channel
+			print(" ", channel.name, channel)
 			for client in channel.clients:
-				print "     ", client.nick, client
+				print("     ", client.nick, client)
 
 	def client_ident(self):
 		"""
@@ -2136,40 +2135,40 @@ class GGPOClient(SocketServer.BaseRequestHandler):
 			clients = self.channel.clients.copy()
 			for client in clients:
 				# if the gone client was playing against someone, update his status
-				if (client.opponent==self.nick):
+				if client.opponent == self.nick:
 					client.opponent=None
 			#self.channel.clients.remove(self)
 			self.handle_part(self.channel.name)
 			logging.debug("[%s] removing myself from channel" % (self.client_ident()))
 
-		if self.nick in self.server.clients and self.clienttype=="client":
+		if self.nick in self.server.clients and self.clienttype == "client":
 			self.server.clients.pop(self.nick)
 			logging.debug("[%s] removing myself from server clients" % (self.client_ident()))
 
-		if self.clienttype=="player":
+		if self.clienttype == "player":
 
 			# return the client to non-playing state when the emulator closes
 			myself=self.get_myclient_from_quark(self.quark)
 			logging.info("[%s] cleaning: %s" % (self.client_ident(), myself.client_ident()))
 
-			myself.side=0
-			myself.opponent=None
-			myself.quark=None
-			if (myself.previous_status!=None and myself.previous_status!=2):
-				myself.status=myself.previous_status
+			myself.side = 0
+			myself.opponent = None
+			myself.quark = None
+			if (myself.previous_status is not None and myself.previous_status!=2):
+				myself.status = myself.previous_status
 			else:
-				myself.status=0
-			myself.previous_status=None
-			params = myself.status,0
+				myself.status = 0
+			myself.previous_status = None
+			params = myself.status, 0
 			myself.handle_status(params)
 
 			try:
 				quarkobject = self.server.quarks[self.quark]
 
 				# try to clean our peer's client too
-				if quarkobject.p1==self and quarkobject.p2!=None:
+				if quarkobject.p1==self and quarkobject.p2 is not None:
 					mypeer = self.get_client_from_nick(quarkobject.p2.nick)
-				elif quarkobject.p2==self and quarkobject.p1!=None:
+				elif quarkobject.p2==self and quarkobject.p1 is not None:
 					mypeer = self.get_client_from_nick(quarkobject.p1.nick)
 				else:
 					mypeer = self
@@ -2178,7 +2177,7 @@ class GGPOClient(SocketServer.BaseRequestHandler):
 				mypeer.opponent=None
 				if (mypeer != self):
 					mypeer.quark=None
-				if (mypeer.previous_status!=None and mypeer.previous_status!=2):
+				if (mypeer.previous_status is not None and mypeer.previous_status!=2):
 					mypeer.status=mypeer.previous_status
 				else:
 					mypeer.status=0
@@ -2236,9 +2235,9 @@ class GGPOClient(SocketServer.BaseRequestHandler):
 						negseq=4294967294 #'\xff\xff\xff\xfe'
 						response = self.reply(negseq,self.sizepad(str(nick))+self.sizepad(str(msg)))
 						logging.debug('to %s: %r' % (self.client_ident(), response))
-						if (quarkobject.p1client!=None):
+						if quarkobject.p1client is not None:
 							quarkobject.p1client.send_queue.append(response)
-						if (quarkobject.p2client!=None):
+						if quarkobject.p2client is not None:
 							quarkobject.p2client.send_queue.append(response)
 
 						# update the duration
@@ -2261,7 +2260,6 @@ class GGPOClient(SocketServer.BaseRequestHandler):
 
 						conn.close()
 
-
 				if quarkobject.p1==self and self.quark!=None and quarkobject.p2!=None:
 					logging.debug("[%s] killing peer connection: %s" % (self.client_ident(), quarkobject.p2.client_ident()))
 					quarkobject.p2.request.close()
@@ -2269,15 +2267,15 @@ class GGPOClient(SocketServer.BaseRequestHandler):
 					logging.debug("[%s] killing peer connection: %s" % (self.client_ident(), quarkobject.p1.client_ident()))
 					quarkobject.p1.request.close()
 
-			except KeyError, AttributeError:
+			except KeyError as AttributeError:
 				pass
 
-		if self.clienttype=="spectator":
+		if self.clienttype == "spectator":
 			# this client is an spectator
 			try:
 				logging.debug("[%s] spectator leaving quark %s" % (self.client_ident(), self.quark))
 				self.spectator_leave(self.quark)
-			except KeyError, AttributeError:
+			except KeyError as AttributeError:
 				pass
 
 		if self.host in self.server.connections:
@@ -2291,14 +2289,13 @@ class GGPOClient(SocketServer.BaseRequestHandler):
 		"""
 		Return a user-readable description of the client
 		"""
-		return('<%s %s@%s>' % (
+		return '<%s %s@%s>' % (
 			self.__class__.__name__,
 			self.nick,
 			self.host[0],
-			)
 		)
 
-class GGPOServer(SocketServer.ThreadingMixIn, SocketServer.TCPServer):
+class GGPOServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
 	daemon_threads = True
 	allow_reuse_address = True
 
@@ -2527,14 +2524,14 @@ class GGPOServer(SocketServer.ThreadingMixIn, SocketServer.TCPServer):
 		self.clients = {}  # Connected authenticated clients (GGPOClient instances) by nickname
 		self.connections = {} # Connected unauthenticated clients (GGPOClient instances) by host
 		self.quarks = {} # quark games (GGPOQuark instances) by quark
-		SocketServer.TCPServer.__init__(self, server_address, RequestHandlerClass)
+		socketserver.TCPServer.__init__(self, server_address, RequestHandlerClass)
 
-class RendezvousUDPServer(SocketServer.ThreadingMixIn, SocketServer.UDPServer):
+class RendezvousUDPServer(socketserver.ThreadingMixIn, socketserver.UDPServer):
 	def __init__(self, server_address, MyUDPHandler):
 		self.quarkqueue = {}
-		SocketServer.UDPServer.__init__(self, server_address, MyUDPHandler)
+		socketserver.UDPServer.__init__(self, server_address, MyUDPHandler)
 
-class MyUDPHandler(SocketServer.BaseRequestHandler):
+class MyUDPHandler(socketserver.BaseRequestHandler):
 	"""
 	This class works similar to the TCP handler class, except that
 	self.request consists of a pair of data and client socket, and since
@@ -2543,20 +2540,20 @@ class MyUDPHandler(SocketServer.BaseRequestHandler):
 	"""
 
 	def __init__(self, request, client_address, server):
-		self.quark=''
-		SocketServer.BaseRequestHandler.__init__(self, request, client_address, server)
+		self.quark = ''
+		socketserver.BaseRequestHandler.__init__(self, request, client_address, server)
 
-	def addr2bytes(self, addr ):
+	def addr2bytes(self, addr):
 		"""Convert an address pair to a hash."""
 		host, port = addr
 		try:
 			host = socket.gethostbyname( host )
 		except (socket.gaierror, socket.error):
-			raise ValueError, "invalid host"
+			raise ValueError("invalid host")
 		try:
 			port = int(port)
 		except ValueError:
-			raise ValueError, "invalid port"
+			raise ValueError("invalid port")
 		bytes  = socket.inet_aton( host )
 		bytes += struct.pack( "H", port )
 		return bytes
@@ -2569,7 +2566,7 @@ class MyUDPHandler(SocketServer.BaseRequestHandler):
 			quark=data.split("/")[1]
 			quarkobject = ggposerver.quarks.setdefault(quark, GGPOQuark(quark))
 			quarkobject.useports=True
-			#ggposerver.quarks[quark].useports=True
+			# ggposerver.quarks[quark].useports=True
 			logging.info("[%s:%d] HOLEPUNCH FAILED for quark %s, will use ports" % (self.client_address[0], self.client_address[1], quark))
 
 		if data != "ok" and "useports" not in data:
@@ -2591,7 +2588,7 @@ class MyUDPHandler(SocketServer.BaseRequestHandler):
 			logging.info("HOLEPUNCH linked: %s" % self.quark)
 			del self.server.quarkqueue[self.quark]
 		except KeyError:
-			if self.quark!='':
+			if self.quark != '':
 				self.server.quarkqueue[self.quark] = self.client_address
 
 class Daemon:
@@ -2605,7 +2602,7 @@ class Daemon:
 			pid = os.fork()
 			if pid > 0:
 				sys.exit(0) # End parent
-		except OSError, e:
+		except OSError as e:
 			sys.stderr.write("fork #1 failed: %d (%s)\n" % (e.errno, e.strerror))
 			sys.exit(-2)
 
@@ -2618,14 +2615,13 @@ class Daemon:
 			pid = os.fork()
 			if pid > 0:
 				try:
-					f = file('ggposrv.pid', 'w')
-					f.write(str(pid))
-					f.close()
-				except IOError, e:
+					with open('ggposrv.pid', 'w') as f:
+						f.write(str(pid))
+				except IOError as e:
 					logging.error(e)
 					sys.stderr.write(repr(e))
 				sys.exit(0) # End parent
-		except OSError, e:
+		except OSError as e:
 			sys.stderr.write("fork #2 failed: %d (%s)\n" % (e.errno, e.strerror))
 			sys.exit(-2)
 
@@ -2640,8 +2636,8 @@ if __name__ == "__main__":
 
 	global ggposerver
 
-	print "-!- FightCade server version {0:.2f}".format(VERSION/100.0)
-	print "-!- (c) 2014-2015 Pau Oliva Fora (@pof) "
+	print("-!- FightCade server version {0:.2f}".format(VERSION/100.0))
+	print("-!- (c) 2014-2015 Pau Oliva Fora (@pof) ")
 
 	#
 	# Parameter parsing
@@ -2693,18 +2689,17 @@ if __name__ == "__main__":
 	# Handle start/stop/restart commands.
 	#
 	if options.stop or options.restart:
-		print "-!- Stopping ggposrv"
+		print("-!- Stopping ggposrv")
 		logging.info("Stopping ggposrv")
 		pid = None
 		try:
-			f = file('ggposrv.pid', 'r')
-			pid = int(f.readline())
-			f.close()
+			with open('ggposrv.pid', 'r') as f:
+				pid = int(f.readline())
 			os.unlink('ggposrv.pid')
-		except ValueError, e:
+		except ValueError as e:
 			sys.stderr.write('Error in pid file `ggposrv.pid`. Aborting\n')
 			sys.exit(-1)
-		except IOError, e:
+		except IOError as e:
 			pass
 
 		if pid:
@@ -2715,7 +2710,7 @@ if __name__ == "__main__":
 		if not options.restart:
 			sys.exit(0)
 
-	print "-!- Starting ggposrv"
+	print("-!- Starting ggposrv")
 	logging.info("Starting ggposrv")
 	logging.debug("logfile = %s" % (logfile))
 
@@ -2758,13 +2753,13 @@ if __name__ == "__main__":
 		if options.httpserver:
 			webserver = HTTPServer((options.listen_address, listen_port+1000), GGPOHttpHandler)
 			logging.info('Starting http server on %s:%s/tcp' % (options.listen_address, str(listen_port+1000)))
-			t2=threading.Thread(target=webserver.serve_forever)
-			t2.daemon=True
+			t2 = threading.Thread(target=webserver.serve_forever)
+			t2.daemon = True
 			t2.start()
 
 		ggposerver.serve_forever()
 
-	except socket.error, e:
+	except socket.error as e:
 		logging.error(repr(e))
 		sys.exit(-2)
 	except:
